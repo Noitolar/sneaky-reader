@@ -200,6 +200,14 @@
     return true;
   }
 
+  /** 跳到指定章节的开头（PageUp / PageDown 用），越界自动夹取。 */
+  function goToChapter(index) {
+    const target = Math.min(Math.max(index, 0), chapters.length - 1);
+    if (target === currentAnchor.chapter) return;
+    focusAnchor({ chapter: target, paragraph: 0, isTitle: true }, 0);
+    flushSave();
+  }
+
   /** 二分查找视口顶部的元素（子节点顺序即阅读顺序）。 */
   function findTopElement() {
     const children = contentEl.children;
@@ -315,21 +323,15 @@
         readerEl.scrollTop -= lineStep;
         break;
       case 'PageDown':
-        readerEl.scrollTop += readerEl.clientHeight;
+        goToChapter(currentAnchor.chapter + 1);
         break;
       case 'PageUp':
-        readerEl.scrollTop -= readerEl.clientHeight;
+        goToChapter(currentAnchor.chapter - 1);
         break;
+      // Home / End 已不再是快捷键。这里显式吞掉按键：否则会落到浏览器默认的
+      // 「滚动到文档首/尾」行为上，把阅读位置带跑。
       case 'Home':
-        focusAnchor({ chapter: 0, paragraph: 0, isTitle: true }, 0);
-        flushSave();
-        break;
       case 'End':
-        focusAnchor(
-          { chapter: chapters.length - 1, paragraph: 0, isTitle: true },
-          0
-        );
-        flushSave();
         break;
       default:
         handled = false;
@@ -434,34 +436,18 @@
     if (booted && document.hidden) flushSave();
   });
 
-  /* ---------- 鼠标双击：左键最小化 / 右键关闭 ---------- */
+  /* ---------- 鼠标双击：左键双击关闭窗口 ---------- */
 
-  /** 右键双击的判定间隔（毫秒）。左键沿用系统自带的双击判定。 */
-  const RIGHT_DOUBLE_CLICK_MS = 400;
-
-  let lastRightClickAt = 0;
-
-  // 无标题栏窗口不需要右键菜单，顺便避免菜单干扰双击判定
+  // 无标题栏窗口不需要右键菜单
   document.addEventListener('contextmenu', (e) => {
     e.preventDefault();
   });
 
-  document.addEventListener('mousedown', (e) => {
-    if (e.button !== 2) return;
-    const now = Date.now();
-    if (now - lastRightClickAt <= RIGHT_DOUBLE_CLICK_MS) {
-      lastRightClickAt = 0;
-      // 走 close()，主进程的 close 处理会先落盘窗口位置与尺寸
-      api.closeWindow();
-    } else {
-      lastRightClickAt = now;
-    }
-  });
-
-  // 左键双击窗口任意位置自动最小化
+  // 左键双击窗口任意位置关闭窗口。
+  // 走 close()，主进程的 close 处理会先把窗口位置与尺寸落盘。
   document.addEventListener('dblclick', (e) => {
     if (e.button !== 0) return;
-    api.minimizeWindow();
+    api.closeWindow();
   });
 
   // 关闭/失焦前落盘，保证进度不丢失

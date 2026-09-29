@@ -48,7 +48,7 @@ const DEFAULTS = {
   fontFamily: 'SimSun, Times New Roman, serif',
   fontSize: 10,
   lineHeight: 1.7,
-  window: { width: 400, height: 100, position: 'top-left', opacity: 1, blur: false },
+  window: { width: 400, height: 160, position: 'top-left', opacity: 1, blur: false },
   remember: { window: { x: null, y: null, width: null, height: null } },
   progress: { chapter: 0, paragraph: 0 },
 };
@@ -100,7 +100,7 @@ lineHeight: 1.7
 # 这里是你手写的初始设置：首次启动、或删除了下面的「记忆配置」后生效。
 window:
   width: 400               # 窗口宽度（px）
-  height: 100              # 窗口高度（px）
+  height: 160              # 窗口高度（px）
   position: top-left       # 首次启动位置：top-left / top-right / bottom-left / bottom-right / center
                            # 底部位置以「工作区」为基准，已自动避开 Windows 任务栏
 

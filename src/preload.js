@@ -17,10 +17,7 @@ contextBridge.exposeInMainWorld('readerAPI', {
   saveProgress: (chapter, paragraph) =>
     ipcRenderer.invoke('progress:save', chapter, paragraph),
 
-  /** 最小化窗口（左键双击触发）。 */
-  minimizeWindow: () => ipcRenderer.send('window:minimize'),
-
-  /** 关闭窗口（右键双击触发；主进程会先落盘窗口状态）。 */
+  /** 关闭窗口（左键双击触发；主进程会先落盘窗口状态）。 */
   closeWindow: () => ipcRenderer.send('window:close'),
 
   /** 开始拖动窗口（由主进程依据屏幕光标绝对定位，避免漂移）。 */

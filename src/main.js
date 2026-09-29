@@ -15,11 +15,21 @@ let mainWindow = null;
  *   避免渲染层事件坐标（CSS px）与窗口坐标（DIP）不一致导致的漂移；
  * - 以按下时的窗口位置为基准做绝对定位，不会累积舍入误差；
  * - 每 16ms 采样一次，即使光标移出窗口也能继续跟随；
- * - 移动时显式传入按下瞬间的宽高（setBounds 而非 setPosition）：在非 100% 缩放的
- *   Windows 上，setPosition 会因 DPI 换算让窗口尺寸逐步膨胀，必须锁定尺寸。
+ * - 移动时显式传入宽高（setBounds 而非 setPosition）：在非 100% 缩放的 Windows 上，
+ *   setPosition 会因 DPI 换算让窗口尺寸逐步膨胀，必须锁定尺寸。
  */
 let dragSession = null;
 let windowStateSaveTimer = null;
+
+/**
+ * 窗口尺寸的「权威值」。
+ *
+ * 不能从 getBounds() 反推尺寸：当窗口停在「非整物理像素」的位置上时，Windows 会把
+ * 物理矩形向外取整，导致报出的尺寸虚高 1~2px（实测 125% 缩放下 556x224 会报成 558x226）。
+ * 把这个虚高值写回配置后，下次启动的网格对齐又会向上取整，于是每次「挪动 → 关闭 → 重启」
+ * 窗口都会变大一圈。所以尺寸只由这里维护，仅在用户真正缩放窗口时更新。
+ */
+let windowSize = null;
 
 function endDrag() {
   const session = dragSession;
@@ -61,18 +71,21 @@ function applyDrag() {
     return;
   }
 
-  const targetX = session.origin.x + (cursor.x - session.cursorStart.x);
-  const targetY = session.origin.y + (cursor.y - session.cursorStart.y);
+  // 位置必须落在「整数物理像素」网格上：否则 Windows 会把窗口的物理矩形向外取整，
+  // 尺寸随之虚高，被记录后下次启动又向上对齐，窗口就会越挪越大。
+  const targetX = alignToGrid(session.origin.x + (cursor.x - session.cursorStart.x), session.grid);
+  const targetY = alignToGrid(session.origin.y + (cursor.y - session.cursorStart.y), session.grid);
   if (session.lastX === targetX && session.lastY === targetY) return;
   session.lastX = targetX;
   session.lastY = targetY;
 
-  // 关键：显式传入按下瞬间的宽高，避免 DPI 换算导致窗口尺寸膨胀
+  // 尺寸用权威值（不重新读 getBounds），彻底与位置解耦
+  const size = windowSize || session.bounds;
   win.setBounds({
     x: targetX,
     y: targetY,
-    width: session.bounds.width,
-    height: session.bounds.height,
+    width: size.width,
+    height: size.height,
   });
 }
 
@@ -82,8 +95,10 @@ const ANCHOR_INSET = 6;
 /**
  * 「整数物理像素」网格的步长（DIP）。
  *
- * 在非整数缩放下（125% → 5/4），DIP 坐标若不在该网格上，物理像素就会落在半个像素上，
- * Windows 会反过来微调窗口尺寸（实测 400x100 变成 402x102）。把坐标对齐到网格即可避免。
+ * 在非整数缩放下（125% → 5/4），DIP 坐标若不在该网格上，物理像素就落在半个像素上，
+ * Windows 会把窗口的物理矩形向外取整：既会让报出的尺寸虚高 1~2px，也会让窗口尺寸在
+ * 反复「记录 → 下次启动」后逐次变大。把坐标与尺寸都对齐到该网格即可根除。
+ * 注意 setBounds 会把小数 DIP 向下取整，所以只能对齐到该网格、无法做到 1 物理像素步进。
  */
 function physicalGridStep() {
   const scale = screen.getPrimaryDisplay().scaleFactor || 1;
@@ -91,6 +106,11 @@ function physicalGridStep() {
     if (Math.abs(step * scale - Math.round(step * scale)) < 1e-6) return step;
   }
   return 1;
+}
+
+/** 把坐标或尺寸对齐到整物理像素网格。 */
+function alignToGrid(value, grid) {
+  return Math.round(value / grid) * grid;
 }
 
 /**
@@ -166,11 +186,11 @@ function isPositionUsable(x, y, width, height) {
  */
 function resolveWindowState(cfg) {
   const grid = physicalGridStep();
-  const alignPos = (value) => Math.round(value / grid) * grid;
+  const alignPos = (value) => alignToGrid(value, grid);
   // 尺寸也要对齐：宽高若落在半个物理像素上，Windows 会向上取整，
   // 而记录下来的值下次又会对齐出更大的尺寸，导致每次重启都长大一点。
   const alignSize = (value, min) =>
-    Math.max(Math.round(value / grid) * grid, Math.ceil(min / grid) * grid);
+    Math.max(alignToGrid(value, grid), Math.ceil(min / grid) * grid);
 
   const width = alignSize(cfg.effectiveWindow.width, config.MIN_WINDOW_WIDTH);
   const height = alignSize(cfg.effectiveWindow.height, config.MIN_WINDOW_HEIGHT);
@@ -202,13 +222,19 @@ function describeNovelError(err) {
   ].join('\n');
 }
 
-/** 把窗口当前的位置与尺寸写入记忆配置。 */
+/**
+ * 把窗口当前的位置与尺寸写入记忆配置。
+ *
+ * 位置取 getBounds() 的 x/y（就是我们设进去的、已对齐网格的值）；
+ * 尺寸取 windowSize 这个权威值，而不是 getBounds() —— 后者在非整物理像素位置上会虚高。
+ */
 function persistWindowState(win) {
   if (!win || win.isDestroyed()) return;
   try {
     const b = win.getBounds();
-    config.saveWindowState({ x: b.x, y: b.y, width: b.width, height: b.height });
-    console.log(`[window] 已记录窗口状态 (${b.x}, ${b.y}) ${b.width}x${b.height}`);
+    const size = windowSize || { width: b.width, height: b.height };
+    config.saveWindowState({ x: b.x, y: b.y, width: size.width, height: size.height });
+    console.log(`[window] 已记录窗口状态 (${b.x}, ${b.y}) ${size.width}x${size.height}`);
   } catch (err) {
     console.error('[window] 记录窗口状态失败：', err.message);
   }
@@ -217,6 +243,8 @@ function persistWindowState(win) {
 function createWindow() {
   const cfg = config.loadConfig();
   const state = resolveWindowState(cfg);
+  // 记录权威尺寸，之后拖动与写回都以它为准
+  windowSize = { width: state.width, height: state.height };
   const translucent = cfg.window.opacity < 1;
   const blurred = translucent && cfg.window.blur;
   console.log(
@@ -275,7 +303,9 @@ function createWindow() {
   }
 
   win.setMenuBarVisibility(false);
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html')).catch((err) => {
+    console.error('[window] 加载阅读页面失败：', err.message);
+  });
 
   win.once('ready-to-show', () => {
     win.show();
@@ -290,9 +320,20 @@ function createWindow() {
 
   // 用户拖拽边缘缩放结束后记录（去抖，避免拖动过程中频繁写盘）
   win.on('resized', () => {
+    // 拖动过程中窗口位置/尺寸都由我们接管，这里的 WM_SIZE 不算用户缩放
+    if (dragSession) return;
     if (windowStateSaveTimer) clearTimeout(windowStateSaveTimer);
     windowStateSaveTimer = setTimeout(() => {
       windowStateSaveTimer = null;
+      if (win.isDestroyed()) return;
+      // 只有用户真正缩放过才更新权威尺寸。此时窗口位置必定落在物理像素网格上
+      //（拖动与恢复都会对齐），因此 getBounds() 报出的尺寸是可信的。
+      const b = win.getBounds();
+      const grid = physicalGridStep();
+      windowSize = {
+        width: alignToGrid(b.width, grid),
+        height: alignToGrid(b.height, grid),
+      };
       persistWindowState(win);
     }, 400);
   });
@@ -339,11 +380,6 @@ function registerIpc() {
     }
   });
 
-  ipcMain.on('window:minimize', (event) => {
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (win) win.minimize();
-  });
-
   ipcMain.on('window:close', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     // 用 close() 而非 destroy()，保证先触发 close 事件把窗口状态落盘
@@ -354,11 +390,12 @@ function registerIpc() {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return;
     endDrag();
-    // 在窗口尚未移动时锁定尺寸，整个拖动过程都用这一份宽高
+    // 会话内固定住网格步长与尺寸基准，拖动过程中不再读取 getBounds()
     const bounds = win.getBounds();
     dragSession = {
       win,
       bounds,
+      grid: physicalGridStep(),
       origin: { x: bounds.x, y: bounds.y },
       cursorStart: screen.getCursorScreenPoint(),
       armed: false,
