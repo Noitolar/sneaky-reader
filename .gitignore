@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+
+.codebuddy
+.idea
+library

@@ -1,0 +1,98 @@
+/* ============================================================
+   sneaky-reader 样式
+   设计取向：Minimalism / Frameless / Text-first / 低干扰
+   ============================================================ */
+
+:root {
+  /* 字体（默认：宋体 + Times New Roman，10px） */
+  --font-family: "SimSun", "Times New Roman", serif;
+  --font-size: 10px;
+  --line-height: 1.7;
+
+  /* 主题令牌的兜底值（暗色）。
+     实际取值由 renderer.js 依据 config.yaml 的 theme 从主题表写入，
+     与主进程的窗口底色同源。 */
+  --bg: #1a1a1a;
+  --fg: #c8c8c8;
+  --fg-strong: #e6e6e6;
+  --border: #3a3a3a;
+  --error: #d9534f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  line-height: var(--line-height);
+  color: var(--fg);
+  cursor: default;
+  /* 需求：不需要文字选中功能 */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#reader {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 7px 6px;
+  outline: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  transition: background-color 160ms ease, border-color 160ms ease;
+  /* 极简：隐藏滚动条 */
+  scrollbar-width: none;
+  /* 关闭浏览器滚动锚定，避免内容变化时自动修正 scrollTop */
+  overflow-anchor: none;
+}
+
+#reader::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+#content {
+  position: relative;
+  overflow-anchor: none;
+}
+
+.chapter-title {
+  margin: 0.9em 0 0.45em;
+  font-size: calc(var(--font-size) + 2px);
+  font-weight: 600;
+  color: var(--fg-strong);
+  letter-spacing: 0.02em;
+}
+
+.chapter-title:first-child {
+  margin-top: 0.15em;
+}
+
+.para {
+  margin: 0 0 0.3em;
+  /* 保留源文件中的全角空格缩进，并自动换行 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.para.error {
+  color: var(--error);
+  white-space: pre-wrap;
+}
