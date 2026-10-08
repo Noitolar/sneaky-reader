@@ -48,10 +48,70 @@ const DEFAULTS = {
   fontFamily: 'SimSun, Times New Roman, serif',
   fontSize: 10,
   lineHeight: 1.7,
+  replace: [],
   window: { width: 400, height: 160, position: 'top-left', opacity: 1, blur: false },
   remember: { window: { x: null, y: null, width: null, height: null } },
   progress: { chapter: 0, paragraph: 0 },
 };
+
+/** 正则替换规则的条数上限（避免配置异常导致每段渲染耗时过长）。 */
+const MAX_REPLACE_RULES = 200;
+
+/**
+ * 规整「正则替换」规则列表：只影响显示内容，不修改小说文件。
+ *
+ * 只做校验与归一化，不在此处编译 RegExp（正则对象无法经 IPC 传递），
+ * 渲染层会按 pattern/flags 重新编译。非法正则与缺少 pattern 的条目直接丢弃，
+ * 并在控制台给出提示，而不是让整个程序报错。
+ */
+function normalizeReplaceRules(raw) {
+  if (!Array.isArray(raw)) {
+    if (raw !== undefined && raw !== null) {
+      console.warn('[config] replace 应为规则列表（YAML 数组），已忽略');
+    }
+    return [];
+  }
+
+  const rules = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') {
+      console.warn('[config] 忽略一条格式不正确的正则替换规则（应为 { pattern, replace, flags }）');
+      continue;
+    }
+
+    const pattern = typeof item.pattern === 'string' ? item.pattern : '';
+    if (!pattern) {
+      console.warn('[config] 忽略一条缺少 pattern 的正则替换规则');
+      continue;
+    }
+
+    // 默认全局替换：替换规则几乎都需要替换掉一处段落里的所有匹配
+    const flags = typeof item.flags === 'string' ? item.flags : 'g';
+    try {
+      // 仅用于校验
+      new RegExp(pattern, flags);
+    } catch (err) {
+      console.warn(`[config] 忽略无效的正则替换规则「${pattern}」：${err.message}`);
+      continue;
+    }
+
+    const replace =
+      typeof item.replace === 'string'
+        ? item.replace
+        : item.replace === undefined || item.replace === null
+          ? ''
+          : String(item.replace);
+
+    rules.push({ pattern, replace, flags });
+
+    if (rules.length >= MAX_REPLACE_RULES) {
+      console.warn(`[config] 正则替换规则最多 ${MAX_REPLACE_RULES} 条，其余已忽略`);
+      break;
+    }
+  }
+
+  return rules;
+}
 
 /** 窗口不透明度允许范围。 */
 const MIN_OPACITY = 0.3;
@@ -95,6 +155,30 @@ fontSize: 10
 
 # 行高倍数（相对字号），同时决定「逐行滚动」的步长
 lineHeight: 1.7
+
+# --- 正则替换（只改显示内容，不改动小说文件）------------------
+# 用途：把正文里不想看到的内容（网站广告、字数标记、分隔符等）替换掉或删掉。
+# 只影响「显示出来的文字」，txt 文件本身不会被修改，章节识别与阅读进度也不受影响。
+# 规则按顺序逐条应用到「章节标题 + 正文段落」；某段被替换后只剩空白时，该段整段隐藏。
+# 每条的字段：
+#   pattern  必填，正则表达式（建议用单引号包裹，反斜杠不会被转义）
+#   replace  选填，替换成的文本；省略表示直接删掉匹配到的内容
+#   flags    选填，正则标志；省略默认为 g（替换全部匹配），常用 i 忽略大小写
+# 替换文本中可用 $1 $2 引用捕获组，$& 代表整个匹配，$$ 表示字面量 $。
+# 最多 200 条；写错正则的那一条会被忽略并在控制台提示，不影响其它规则。
+replace: []
+# 常用示例（去掉行首的 #，并把上面的 replace: [] 换成 replace: 即可启用）：
+# replace:
+#   - pattern: '^[\s　]*(请收藏本站|手机用户请浏览|天才一秒记住).*$'   # 整行的网站广告
+#     replace: ''
+#   - pattern: '[（(]本章完[）)]'                                     # 段尾或整行的「（本章完）」
+#     replace: ''
+#   - pattern: '^[\s　]*本章完[\s　]*$'                                # 整行只有「本章完」（无括号）
+#     replace: ''
+#   - pattern: '[\s　]*[（(]\d{1,4}[）)][\s　]*$'                      # 段尾的（字数标记）
+#     replace: ''
+#   - pattern: '&nbsp;'                                              # 转义符
+#     replace: ''
 
 # --- 窗口（初始默认设置）--------------------------------------
 # 这里是你手写的初始设置：首次启动、或删除了下面的「记忆配置」后生效。
@@ -146,6 +230,7 @@ function normalize(raw) {
     fontFamily: DEFAULTS.fontFamily,
     fontSize: DEFAULTS.fontSize,
     lineHeight: DEFAULTS.lineHeight,
+    replace: [],
     window: { ...DEFAULTS.window },
     remember: { window: { ...DEFAULTS.remember.window } },
     progress: { ...DEFAULTS.progress },
@@ -168,6 +253,9 @@ function normalize(raw) {
   if (Number.isFinite(src.lineHeight) && src.lineHeight > 0) {
     cfg.lineHeight = src.lineHeight;
   }
+
+  // 正则替换规则：只影响渲染层显示，不参与章节解析
+  cfg.replace = normalizeReplaceRules(src.replace);
 
   // --- 窗口初始默认设置（用户手写）---
   const w = src.window && typeof src.window === 'object' ? src.window : {};
@@ -365,8 +453,10 @@ module.exports = {
   TEMPLATE,
   MIN_WINDOW_WIDTH,
   MIN_WINDOW_HEIGHT,
+  MAX_REPLACE_RULES,
   ensureConfig,
   loadConfig,
+  normalizeReplaceRules,
   saveProgress,
   saveWindowState,
 };

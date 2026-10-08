@@ -32,6 +32,53 @@
   const paraMap = new Map(); // `${chapter}:${paragraph}` -> 段落元素
   const titleMap = new Map(); // `${chapter}` -> 章节标题元素
 
+  /* --------------------------- 正则替换 --------------------------- */
+
+  /**
+   * 已编译的显示层替换规则（来自 config.yaml 的 replace）。
+   *
+   * 规则在渲染时按顺序应用到「标题 + 段落」的文本上，只改变显示内容：
+   * - 章节数组与段落索引始终是原始数据，因此阅读进度、章节识别都不受规则影响；
+   *   改动规则后重开，进度仍指向同一段原文。
+   * - 每次只对当前渲染窗口内的几百个段落执行替换，开销可以忽略。
+   */
+  let compiledRules = [];
+
+  /** 编译规则；主进程已过滤过非法正则，这里再兜一层，避免一条坏规则导致白屏。 */
+  function compileRules(list) {
+    const rules = [];
+    for (const item of Array.isArray(list) ? list : []) {
+      if (!item || typeof item.pattern !== 'string' || !item.pattern) continue;
+      try {
+        rules.push({
+          re: new RegExp(
+            item.pattern,
+            typeof item.flags === 'string' && item.flags ? item.flags : 'g'
+          ),
+          to: typeof item.replace === 'string' ? item.replace : '',
+        });
+      } catch (err) {
+        console.warn('[reader] 忽略无效的替换规则：', item.pattern, err.message);
+      }
+    }
+    return rules;
+  }
+
+  /** 按顺序应用替换规则，返回用于显示的文本。 */
+  function applyRules(text) {
+    if (compiledRules.length === 0) return text;
+    let out = text;
+    for (const rule of compiledRules) {
+      out = out.replace(rule.re, rule.to);
+    }
+    return out;
+  }
+
+  /** 替换后只剩空白（含全角空格）时，该段整体隐藏。 */
+  function isBlank(text) {
+    return text.trim() === '';
+  }
+
   /* --------------------------- 启动流程 --------------------------- */
 
   async function boot() {
@@ -86,7 +133,7 @@
     }, 0);
   }
 
-  /** 应用主题调色板、字体族、字号、行高（并同步滚动步长）。 */
+  /** 应用主题调色板、字体族、字号、行高与正则替换规则（并同步滚动步长）。 */
   function applyConfig(cfg) {
     document.body.dataset.theme = cfg.theme;
 
@@ -104,6 +151,12 @@
     if (palette.error) root.style.setProperty('--error', palette.error);
 
     lineStep = Math.max(1, Math.round(cfg.fontSize * cfg.lineHeight));
+
+    // 正则替换规则：只作用于随后渲染出来的文字
+    compiledRules = compileRules(cfg.replace);
+    if (compiledRules.length > 0) {
+      console.log(`[reader] 已启用 ${compiledRules.length} 条正则替换规则`);
+    }
   }
 
   /* --------------------------- 渲染 --------------------------- */
@@ -136,17 +189,23 @@
       const title = document.createElement('div');
       title.className = 'chapter-title';
       title.dataset.chapter = String(chapter.index);
-      title.textContent = chapter.title;
+      // 标题同样过一遍替换规则；即使被替换成空也保留节点，避免章节锚点取不到元素
+      title.textContent = applyRules(chapter.title);
       frag.appendChild(title);
       titleMap.set(String(chapter.index), title);
 
       const paragraphs = chapter.paragraphs || [];
       for (let j = 0; j < paragraphs.length; j += 1) {
+        const text = applyRules(paragraphs[j]);
+        // 规则把整段替换成空白时隐藏该段（不留空行）。
+        // 注意：段落序号 j 仍按原文计数，因此进度锚点不会因规则而错位。
+        if (isBlank(text)) continue;
+
         const p = document.createElement('div');
         p.className = 'para';
         p.dataset.chapter = String(chapter.index);
         p.dataset.para = String(j);
-        p.textContent = paragraphs[j];
+        p.textContent = text;
         frag.appendChild(p);
         paraMap.set(chapter.index + ':' + j, p);
       }
@@ -178,11 +237,13 @@
         null
       );
     }
-    return (
-      paraMap.get(anchor.chapter + ':' + anchor.paragraph) ||
-      titleMap.get(String(anchor.chapter)) ||
-      null
-    );
+    // 目标段落可能被替换规则整段隐藏：向前找最近的可见段，
+    // 再退化为章节标题，保证进度仍落在同一章内。
+    for (let j = anchor.paragraph; j >= 0; j -= 1) {
+      const el = paraMap.get(anchor.chapter + ':' + j);
+      if (el) return el;
+    }
+    return titleMap.get(String(anchor.chapter)) || null;
   }
 
   /** 保证窗口存在并把 anchor 定位到视口顶部（可保留像素偏移）。 */
