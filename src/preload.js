@@ -25,4 +25,23 @@ contextBridge.exposeInMainWorld('readerAPI', {
 
   /** 结束拖动。 */
   dragEnd: () => ipcRenderer.send('window:drag-end'),
+
+  /** 打开（或聚焦）独立的设置窗口。 */
+  openSettings: () => ipcRenderer.send('settings:open'),
+
+  /** 设置窗口「应用」：立即生效，但**不**写入 config.yaml（仅预览）。 */
+  applyConfig: (patch) => ipcRenderer.invoke('config:apply', patch),
+
+  /** 设置窗口「保存」：写入 config.yaml（只改传入的键，其余内容与手写注释保持不变）。 */
+  saveConfig: (patch) => ipcRenderer.invoke('config:save', patch),
+
+  /** 用系统默认程序打开 config.yaml。 */
+  openConfigFile: () => ipcRenderer.invoke('config:open-file'),
+
+  /** 订阅配置变更（外部编辑 config.yaml 或菜单保存后由主进程广播）。返回取消订阅函数。 */
+  onConfigChanged: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('config:changed', listener);
+    return () => ipcRenderer.removeListener('config:changed', listener);
+  },
 });

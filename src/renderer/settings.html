@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:"
+    />
+    <title>sneaky-reader 设置</title>
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body data-theme="dark">
+    <div id="settings-root">
+      <header id="settings-header">
+        <span class="settings-title">sneaky-reader 设置</span>
+        <button id="btn-close" type="button" title="关闭（Esc）">×</button>
+      </header>
+
+      <div class="settings-body">
+        <section class="group">
+          <h2 class="group-title">阅读外观</h2>
+
+          <label class="field">
+            <span class="field-label">主题</span>
+            <span class="select-wrap">
+              <select id="cfg-theme"></select>
+            </span>
+          </label>
+
+          <label class="field">
+            <span class="field-label">字体族</span>
+            <input id="cfg-fontFamily" type="text" spellcheck="false" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">字号 (px)</span>
+            <input id="cfg-fontSize" type="number" min="1" step="1" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">行高倍数</span>
+            <input id="cfg-lineHeight" type="number" min="0.5" step="0.1" />
+          </label>
+        </section>
+
+        <section class="group">
+          <h2 class="group-title">窗口</h2>
+
+          <label class="field">
+            <span class="field-label">不透明度</span>
+            <input id="cfg-opacity" type="range" min="0.3" max="1" step="0.05" />
+            <output id="cfg-opacity-value"></output>
+          </label>
+          <p class="group-hint">仅作用于阅读窗口，设置窗口始终保持不透明。</p>
+        </section>
+
+        <section class="group">
+          <h2 class="group-title">小说来源</h2>
+          <textarea
+            id="cfg-source"
+            class="block-input"
+            rows="3"
+            spellcheck="false"
+            placeholder="每行一个路径：一行 = 单个文件或一个目录，多行 = 多个文件按顺序合并"
+          ></textarea>
+          <p class="group-hint">
+            修改来源会在应用后重新解析小说，并把阅读进度重置到第 1 章。
+          </p>
+        </section>
+
+        <section class="group">
+          <h2 class="group-title">正则替换</h2>
+          <div id="cfg-rules"></div>
+          <button id="cfg-add-rule" type="button" class="ghost">+ 添加规则</button>
+          <p class="group-hint">
+            只调整「显示出来的文字」，不改动 txt 文件；被替换成空白的段落会整段隐藏。
+          </p>
+        </section>
+      </div>
+
+      <footer class="settings-footer">
+        <span id="settings-status" class="settings-status"></span>
+        <div class="footer-actions">
+          <button id="btn-open-file" type="button">打开 config.yaml</button>
+          <button id="btn-reset" type="button">恢复默认</button>
+          <button id="btn-apply" type="button">应用</button>
+          <button id="btn-save" type="button" class="primary">保存</button>
+        </div>
+      </footer>
+    </div>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

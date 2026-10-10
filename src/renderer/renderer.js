@@ -1,5 +1,12 @@
 'use strict';
 
+/**
+ * 阅读窗口。
+ *
+ * 设置不再内嵌在这个窗口里（窗口通常很小）：按 Ctrl + , 会由主进程打开
+ * 独立的设置窗口（settings.html），配置改动通过 config:changed 广播回来，
+ * 这里负责即时应用（换书、配色、排版、替换规则）。
+ */
 (function () {
   /** preload 通过 contextBridge 暴露的白名单 API */
   const api = window.readerAPI;
@@ -90,6 +97,15 @@
       return;
     }
     applyConfig(cfg);
+    await startReading();
+  }
+
+  /**
+   * 读取并解析小说，渲染并定位到进度锚点。
+   * 换书（source 变更）时会被再次调用，此时主进程已把进度重置为 0。
+   */
+  async function startReading() {
+    booted = false;
 
     let novel;
     try {
@@ -99,12 +115,13 @@
       return;
     }
 
-    if (!novel.ok) {
-      renderError(novel.error || '未知错误');
+    if (!novel || !novel.ok) {
+      renderError((novel && novel.error) || '未知错误');
       return;
     }
 
     chapters = novel.chapters || [];
+    windowStart = -1;
     if (chapters.length === 0) {
       renderError('（空）未解析到任何章节内容。');
       return;
@@ -162,6 +179,7 @@
   /* --------------------------- 渲染 --------------------------- */
 
   function renderError(message) {
+    booted = false;
     paraMap.clear();
     titleMap.clear();
     contentEl.textContent = '';
@@ -350,6 +368,41 @@
       .catch(() => {});
   }
 
+  /* --------------------- 配置变更的即时应用 --------------------- */
+
+  /**
+   * 应用来自主进程的配置变更（非换书路径）。
+   * 字体、字号、行高与替换规则都可能改变排版与可见段落，
+   * 因此重新渲染当前窗口并回到原锚点，保证阅读位置不跳。
+   */
+  function applyConfigLive(cfg) {
+    applyConfig(cfg);
+
+    if (chapters.length === 0 || windowStart < 0) return;
+    const anchor = { ...currentAnchor };
+    const start = windowStart;
+    renderRange(start);
+    windowStart = start;
+    if (booted) focusAnchor(anchor, 0);
+  }
+
+  /** 订阅主进程广播的配置变更（设置窗口的应用/保存、外部编辑 config.yaml 共用）。 */
+  function subscribeConfigChanges() {
+    if (typeof api.onConfigChanged !== 'function') return;
+    api.onConfigChanged((payload) => {
+      const cfg = payload && payload.config;
+      if (!cfg) return;
+
+      if (payload.sourceChanged) {
+        // 换书：主进程已重置进度，这里重新解析并从头渲染
+        applyConfig(cfg);
+        startReading().catch((err) => renderError('读取小说失败：' + err.message));
+        return;
+      }
+      applyConfigLive(cfg);
+    });
+  }
+
   /* --------------------------- 事件绑定 --------------------------- */
 
   readerEl.addEventListener(
@@ -374,6 +427,13 @@
   );
 
   window.addEventListener('keydown', (e) => {
+    // 打开设置窗口：Ctrl + ,（Chromium 未占用，不与浏览器默认功能冲突）
+    if ((e.ctrlKey || e.metaKey) && (e.key === ',' || e.code === 'Comma')) {
+      e.preventDefault();
+      if (typeof api.openSettings === 'function') api.openSettings();
+      return;
+    }
+
     if (!booted) return;
     let handled = true;
     switch (e.key) {
@@ -389,8 +449,8 @@
       case 'PageUp':
         goToChapter(currentAnchor.chapter - 1);
         break;
-      // Home / End 已不再是快捷键。这里显式吞掉按键：否则会落到浏览器默认的
-      // 「滚动到文档首/尾」行为上，把阅读位置带跑。
+      // Home / End 不作为快捷键（设置窗口走的是 Ctrl + ,）。这里显式吞掉按键：
+      // 否则会落到浏览器默认的「滚动到文档首/尾」行为上，把阅读位置带跑。
       case 'Home':
       case 'End':
         break;
@@ -513,6 +573,8 @@
 
   // 关闭/失焦前落盘，保证进度不丢失
   window.addEventListener('beforeunload', flushSave);
+
+  subscribeConfigChanges();
 
   boot().catch((err) => {
     console.error('[reader] 启动失败：', err);

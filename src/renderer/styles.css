@@ -1,6 +1,8 @@
 /* ============================================================
-   sneaky-reader 样式
+   sneaky-reader 阅读窗口样式
    设计取向：Minimalism / Frameless / Text-first / 低干扰
+
+   设置界面在独立的设置窗口里（settings.html + settings.css）。
    ============================================================ */
 
 :root {

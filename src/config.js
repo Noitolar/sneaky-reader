@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
-const { THEMES, DEFAULT_THEME, hasTheme, resolveTheme } = require('./themes');
+const { THEMES, DEFAULT_THEME, themeNames, hasTheme, paletteFor } = require('./themes');
 
 /**
  * 配置文件所在目录（可写、可编辑，config.yaml 就放在这里）。
@@ -36,11 +36,24 @@ const CONFIG_PATH = path.join(CONFIG_ROOT, 'config.yaml');
 const MIN_WINDOW_WIDTH = 80;
 const MIN_WINDOW_HEIGHT = 40;
 
+/** 设置窗口尺寸的合法下限（px）：内容较多，下限比阅读窗口高。 */
+const MIN_SETTINGS_WINDOW_WIDTH = 320;
+const MIN_SETTINGS_WINDOW_HEIGHT = 360;
+
+/** 最近一次读取或写入的 config.yaml 原文，用于判断外部改动（配置热加载去重）。 */
+let knownContent = null;
+
+/** 写入 config.yaml 并记录内容，避免程序自身的写入反过来触发热加载。 */
+function writeConfigText(text) {
+  fs.writeFileSync(CONFIG_PATH, text, 'utf8');
+  knownContent = text;
+}
+
 /**
- * 内置默认配置，与需求 7~10 保持一致。
+ * 内置默认配置。
  *
- * window    —— 初始默认设置：由用户手写，首次启动或删除记忆配置后生效
- * remember  —— 记忆配置：由程序自动写入（关闭/拖动结束时记录窗口位置与尺寸）
+ * window / settingsWindow —— 初始默认设置：由用户手写，首次启动或删除记忆配置后生效
+ * remember                —— 记忆配置：由程序自动写入（关闭/拖动结束时记录两个窗口的位置与尺寸）
  */
 const DEFAULTS = {
   source: '',
@@ -49,8 +62,12 @@ const DEFAULTS = {
   fontSize: 10,
   lineHeight: 1.7,
   replace: [],
-  window: { width: 400, height: 160, position: 'top-left', opacity: 1, blur: false },
-  remember: { window: { x: null, y: null, width: null, height: null } },
+  window: { width: 400, height: 160, position: 'top-left', opacity: 1 },
+  settingsWindow: { width: 420, height: 560, position: 'center' },
+  remember: {
+    window: { x: null, y: null, width: null, height: null },
+    settingsWindow: { x: null, y: null, width: null, height: null },
+  },
   progress: { chapter: 0, paragraph: 0 },
 };
 
@@ -127,7 +144,7 @@ function themeCommentLines() {
 /** 首启动写入的带注释模板。 */
 const TEMPLATE = `# ============================================================
 # sneaky-reader 配置文件
-# 直接修改本文件并重启程序即可生效，无需任何可视化界面。
+# 直接修改本文件保存后即时生效（无需重启），也可用 Ctrl + , 打开配置菜单。
 # ============================================================
 
 # --- 小说来源（必填）------------------------------------------
@@ -163,19 +180,25 @@ lineHeight: 1.7
 # 每条的字段：
 #   pattern  必填，正则表达式（建议用单引号包裹，反斜杠不会被转义）
 #   replace  选填，替换成的文本；省略表示直接删掉匹配到的内容
-#   flags    选填，正则标志；省略默认为 g（替换全部匹配），常用 i 忽略大小写
+#   flags    选填，正则标志，可组合；省略即为 g（替换全部匹配）。
+#            注意：显式填写后不会再自动补 g，想「忽略大小写且全部替换」要写 gi。
+#            实际有用：g 全部替换（默认）/ i 忽略大小写 / u 按 Unicode 码点；
+#            m、s、y 因规则只作用于「单行」文本（章节标题或一个段落），基本无效。
 # 替换文本中可用 $1 $2 引用捕获组，$& 代表整个匹配，$$ 表示字面量 $。
 # 最多 200 条；写错正则的那一条会被忽略并在控制台提示，不影响其它规则。
 replace: []
 # 常用示例（去掉行首的 #，并把上面的 replace: [] 换成 replace: 即可启用）：
 # replace:
-#   - pattern: '^[\s　]*(请收藏本站|手机用户请浏览|天才一秒记住).*$'   # 整行的网站广告
+#   - pattern: '^[\\s　]*(请收藏本站|手机用户请浏览|天才一秒记住).*$'   # 整行的网站广告
 #     replace: ''
-#   - pattern: '[（(]本章完[）)]'                                     # 段尾或整行的「（本章完）」
+#   - pattern: 'chapter\\s*\\d+'                                       # 英文「Chapter 12」标记（gi 忽略大小写）
+#     flags: gi
 #     replace: ''
-#   - pattern: '^[\s　]*本章完[\s　]*$'                                # 整行只有「本章完」（无括号）
+#   - pattern: '[（(]本章完[）)]'                                     # 段尾或整行的「本章完」
 #     replace: ''
-#   - pattern: '[\s　]*[（(]\d{1,4}[）)][\s　]*$'                      # 段尾的（字数标记）
+#   - pattern: '^[\\s　]*本章完[\\s　]*$'                                # 整行只有「本章完」（无括号）
+#     replace: ''
+#   - pattern: '[\\s　]*[（(]\\d{1,4}[）)][\\s　]*$'                      # 段尾的（字数标记）
 #     replace: ''
 #   - pattern: '&nbsp;'                                              # 转义符
 #     replace: ''
@@ -192,20 +215,29 @@ window:
   # 可看到桌面背景。
   opacity: 1
 
-  # 半透明高斯模糊：置为 true 时启用系统级模糊（Windows 11 亚克力材质），
-  # 让桌面背景在窗口后方呈现毛玻璃效果。仅在 opacity < 1 时可见。
-  # 注：Electron 的透明窗口不支持缩放，因此这里用系统材质实现，而非 CSS 透明背景。
-  blur: false
+# --- 设置窗口（初始默认设置）----------------------------------
+# 设置窗口是独立窗口（Ctrl + , 打开），同样可拖动与缩放，位置与尺寸独立记忆。
+settingsWindow:
+  width: 420               # 设置窗口宽度（px）
+  height: 560              # 设置窗口高度（px）
+  position: center         # 首次启动位置：top-left / top-right / bottom-left / bottom-right / center
 
 # --- 记忆配置（程序自动写入，请勿手动修改）--------------------
 # 程序会在关闭、拖动或缩放结束后记录窗口的位置与尺寸，
 # 下次启动优先按它恢复。删除本块中任意一行，该项即回到上面的「初始默认设置」。
 remember:
+  # 主窗口
   window:
     x:                     # 上次关闭时的窗口横坐标
     y:                     # 上次关闭时的窗口纵坐标
     width:                 # 上次关闭时的窗口宽度（px）
     height:                # 上次关闭时的窗口高度（px）
+  # 设置窗口
+  settingsWindow:
+    x:                     # 上次关闭时的设置窗口横坐标
+    y:                     # 上次关闭时的设置窗口纵坐标
+    width:                 # 上次关闭时的设置窗口宽度（px）
+    height:                # 上次关闭时的设置窗口高度（px）
 
 # --- 阅读进度（程序自动写入，请勿手动修改）--------------------
 progress:
@@ -232,7 +264,11 @@ function normalize(raw) {
     lineHeight: DEFAULTS.lineHeight,
     replace: [],
     window: { ...DEFAULTS.window },
-    remember: { window: { ...DEFAULTS.remember.window } },
+    settingsWindow: { ...DEFAULTS.settingsWindow },
+    remember: {
+      window: { ...DEFAULTS.remember.window },
+      settingsWindow: { ...DEFAULTS.remember.settingsWindow },
+    },
     progress: { ...DEFAULTS.progress },
   };
 
@@ -271,33 +307,37 @@ function normalize(raw) {
   if (Number.isFinite(w.opacity)) {
     cfg.window.opacity = Math.min(Math.max(w.opacity, MIN_OPACITY), MAX_OPACITY);
   }
-  if (typeof w.blur === 'boolean') {
-    cfg.window.blur = w.blur;
+
+  // --- 设置窗口初始默认设置（用户手写）---
+  const sw = src.settingsWindow && typeof src.settingsWindow === 'object' ? src.settingsWindow : {};
+  if (Number.isFinite(sw.width) && sw.width >= MIN_SETTINGS_WINDOW_WIDTH) {
+    cfg.settingsWindow.width = Math.round(sw.width);
+  }
+  if (Number.isFinite(sw.height) && sw.height >= MIN_SETTINGS_WINDOW_HEIGHT) {
+    cfg.settingsWindow.height = Math.round(sw.height);
+  }
+  if (typeof sw.position === 'string' && sw.position.trim()) {
+    cfg.settingsWindow.position = sw.position.trim();
   }
 
   // --- 记忆配置（程序自动写入，允许整块或单个键缺省）---
-  const rememberedWindow =
-    src.remember && typeof src.remember === 'object' && src.remember.window && typeof src.remember.window === 'object'
-      ? src.remember.window
-      : {};
-  if (Number.isFinite(rememberedWindow.x) && Number.isFinite(rememberedWindow.y)) {
-    cfg.remember.window.x = Math.round(rememberedWindow.x);
-    cfg.remember.window.y = Math.round(rememberedWindow.y);
-  }
-  if (Number.isFinite(rememberedWindow.width) && rememberedWindow.width >= MIN_WINDOW_WIDTH) {
-    cfg.remember.window.width = Math.round(rememberedWindow.width);
-  }
-  if (Number.isFinite(rememberedWindow.height) && rememberedWindow.height >= MIN_WINDOW_HEIGHT) {
-    cfg.remember.window.height = Math.round(rememberedWindow.height);
-  }
+  const remembered = src.remember && typeof src.remember === 'object' ? src.remember : {};
+  cfg.remember.window = readRememberBlock(remembered.window, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+  cfg.remember.settingsWindow = readRememberBlock(
+    remembered.settingsWindow,
+    MIN_SETTINGS_WINDOW_WIDTH,
+    MIN_SETTINGS_WINDOW_HEIGHT
+  );
 
   // --- 实际生效的窗口状态：记忆配置优先，缺省则回落到初始默认设置 ---
-  cfg.effectiveWindow = {
-    width: cfg.remember.window.width || cfg.window.width,
-    height: cfg.remember.window.height || cfg.window.height,
-    x: cfg.remember.window.x,
-    y: cfg.remember.window.y,
-  };
+  const effective = (memory, initial) => ({
+    width: memory.width || initial.width,
+    height: memory.height || initial.height,
+    x: memory.x,
+    y: memory.y,
+  });
+  cfg.effectiveWindow = effective(cfg.remember.window, cfg.window);
+  cfg.effectiveSettingsWindow = effective(cfg.remember.settingsWindow, cfg.settingsWindow);
 
   const p = src.progress && typeof src.progress === 'object' ? src.progress : {};
   if (Number.isInteger(p.chapter) && p.chapter >= 0) {
@@ -307,8 +347,21 @@ function normalize(raw) {
     cfg.progress.paragraph = p.paragraph;
   }
 
-  // 把主题解析为具体调色板，供主进程（窗口底色）与渲染进程（CSS 变量）共用
-  cfg.palette = resolveTheme(cfg.theme);
+  // 完整调色板（基础 5 令牌 + 控件派生色），主进程与渲染进程共用
+  cfg.palette = paletteFor(cfg.theme);
+
+  // 设置窗口的主题下拉项（名称 + 中文标签，与 themes.js 保持同步）
+  cfg.themeList = themeNames().map((name) => ({ name, label: THEMES[name].label }));
+
+  // 设置窗口「恢复默认」用：只暴露可编辑的阅读设置（不含小说来源）
+  cfg.readingDefaults = {
+    theme: DEFAULTS.theme,
+    fontFamily: DEFAULTS.fontFamily,
+    fontSize: DEFAULTS.fontSize,
+    lineHeight: DEFAULTS.lineHeight,
+    opacity: DEFAULTS.window.opacity,
+    replace: [],
+  };
 
   return cfg;
 }
@@ -318,7 +371,9 @@ function loadConfig() {
   ensureConfig();
   let raw = {};
   try {
-    raw = yaml.load(fs.readFileSync(CONFIG_PATH, 'utf8')) || {};
+    const text = fs.readFileSync(CONFIG_PATH, 'utf8');
+    knownContent = text;
+    raw = yaml.load(text) || {};
   } catch (err) {
     console.error('[config] config.yaml 解析失败，将使用默认配置：', err.message);
     raw = {};
@@ -349,7 +404,7 @@ function saveProgress(chapter, paragraph) {
     ? text.replace(PROGRESS_RE, block)
     : `${text.replace(/\s*$/, '')}\n\n${block}`;
 
-  fs.writeFileSync(CONFIG_PATH, next, 'utf8');
+  writeConfigText(next);
 }
 
 /** 记忆块的固定说明注释（仅在文件里还没有记忆块时随块写入）。 */
@@ -359,37 +414,75 @@ const REMEMBER_COMMENT = [
   '# 下次启动优先按它恢复。删除本块中任意一行，该项即回到上面的「初始默认设置」。',
 ];
 
+/** 记忆块里的两个子块：阅读窗口与设置窗口各一套位置与尺寸。 */
+const REMEMBER_KINDS = ['window', 'settingsWindow'];
+
+/** 子块的中文标签（写进注释，便于区分两套坐标）。 */
+const REMEMBER_LABELS = { window: '窗口', settingsWindow: '设置窗口' };
+
+/** 取某个窗口的尺寸下限。 */
+function windowLimits(kind) {
+  return kind === 'settingsWindow'
+    ? { minWidth: MIN_SETTINGS_WINDOW_WIDTH, minHeight: MIN_SETTINGS_WINDOW_HEIGHT }
+    : { minWidth: MIN_WINDOW_WIDTH, minHeight: MIN_WINDOW_HEIGHT };
+}
+
+/** 把记忆里的一个子块规整为 { x, y, width, height }（不合法或缺失的项为 null）。 */
+function readRememberBlock(raw, minWidth, minHeight) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const block = { x: null, y: null, width: null, height: null };
+  if (Number.isFinite(src.x) && Number.isFinite(src.y)) {
+    block.x = Math.round(src.x);
+    block.y = Math.round(src.y);
+  }
+  if (Number.isFinite(src.width) && src.width >= minWidth) block.width = Math.round(src.width);
+  if (Number.isFinite(src.height) && src.height >= minHeight) block.height = Math.round(src.height);
+  return block;
+}
+
 /**
- * remember 块本体（不含说明注释）。
+ * remember 块本体（不含说明注释）：两个窗口的子块一起生成。
  *
  * 说明注释必须与块体分开：替换时只重写块体，注释留在原地，
  * 否则每次保存都会再插一份说明注释，导致注释不断堆积。
  */
-function formatRememberBody(state) {
-  const rows = [
-    ['x', state.x, '上次关闭时的窗口横坐标'],
-    ['y', state.y, '上次关闭时的窗口纵坐标'],
-    ['width', state.width, '上次关闭时的窗口宽度（px）'],
-    ['height', state.height, '上次关闭时的窗口高度（px）'],
-  ];
-  // 按最长的「键: 值」对齐注释列
-  const entries = rows.map(([key, value]) => `    ${key}: ${value}`);
-  const pad = Math.max(...entries.map((line) => line.length)) + 2;
+function formatRememberBody(blocks) {
+  const lines = ['remember:'];
+  for (const kind of REMEMBER_KINDS) {
+    const block = blocks[kind] || {};
+    const label = REMEMBER_LABELS[kind];
+    const rows = [
+      ['x', `上次关闭时的${label}横坐标`],
+      ['y', `上次关闭时的${label}纵坐标`],
+      ['width', `上次关闭时的${label}宽度（px）`],
+      ['height', `上次关闭时的${label}高度（px）`],
+    ];
+    // 按最长的「键: 值」对齐注释列；没有值的项留空（与初始模板一致）
+    const entries = rows.map(([key]) => {
+      const value = block[key];
+      return value === null || value === undefined ? `    ${key}:` : `    ${key}: ${value}`;
+    });
+    const pad = Math.max(...entries.map((line) => line.length)) + 2;
 
-  return [
-    'remember:',
-    '  window:',
-    ...rows.map(([, , note], i) => `${entries[i]}${' '.repeat(pad - entries[i].length)}# ${note}`),
-  ];
+    lines.push(`  # ${label}`);
+    lines.push(`  ${kind}:`);
+    rows.forEach(([, note], i) => {
+      lines.push(`${entries[i]}${' '.repeat(Math.max(pad - entries[i].length, 1))}# ${note}`);
+    });
+  }
+  return lines;
 }
 
 /**
- * 把窗口状态写入 config.yaml 的 remember 块。
+ * 把某个窗口（主窗口 / 设置窗口）的位置与尺寸写入 config.yaml 的 remember 块。
  *
- * 该块整体由程序维护，因此这里整体替换（而不是逐行改动）；
- * 块外的一切内容与注释保持原样，初始默认设置 window 块不受影响。
+ * 该块整体由程序维护，因此这里整体重写：两个子块一起输出，
+ * 本次未更新的那个沿用文件里已有的值；块外的一切内容与注释保持原样。
  */
-function saveWindowState(state) {
+function saveWindowState(kind, state) {
+  const target = REMEMBER_KINDS.includes(kind) ? kind : 'window';
+  const { minWidth, minHeight } = windowLimits(target);
+
   const x = Math.round(Number(state && state.x));
   const y = Math.round(Number(state && state.y));
   const width = Math.round(Number(state && state.width));
@@ -397,8 +490,8 @@ function saveWindowState(state) {
   if (
     !Number.isFinite(x) ||
     !Number.isFinite(y) ||
-    !(width >= MIN_WINDOW_WIDTH) ||
-    !(height >= MIN_WINDOW_HEIGHT)
+    !(width >= minWidth) ||
+    !(height >= minHeight)
   ) {
     return;
   }
@@ -410,16 +503,27 @@ function saveWindowState(state) {
     text = TEMPLATE;
   }
 
-  const body = formatRememberBody({ x, y, width, height });
+  // 先取回文件里已记录的两个子块，只覆盖本次要更新的那个
+  let raw = {};
+  try {
+    raw = yaml.load(text) || {};
+  } catch {
+    raw = {};
+  }
+  const prevRemember = raw && typeof raw.remember === 'object' && raw.remember ? raw.remember : {};
+  const blocks = {};
+  for (const kindName of REMEMBER_KINDS) {
+    const limits = windowLimits(kindName);
+    blocks[kindName] = readRememberBlock(prevRemember[kindName], limits.minWidth, limits.minHeight);
+  }
+  blocks[target] = { x, y, width, height };
+
+  const body = formatRememberBody(blocks);
 
   // 文件里还没有记忆块：连同说明注释一起追加到末尾
   if (!/^remember:[ \t]*$/m.test(text)) {
     const appended = [...REMEMBER_COMMENT, ...body];
-    fs.writeFileSync(
-      CONFIG_PATH,
-      `${text.replace(/\s*$/, '')}\n\n${appended.join('\n')}\n`,
-      'utf8'
-    );
+    writeConfigText(`${text.replace(/\s*$/, '')}\n\n${appended.join('\n')}\n`);
     return;
   }
 
@@ -443,7 +547,184 @@ function saveWindowState(state) {
 
   const replacement = head < start ? [...REMEMBER_COMMENT, ...body] : body;
   lines.splice(head, end - head, ...replacement);
-  fs.writeFileSync(CONFIG_PATH, lines.join('\n'), 'utf8');
+  writeConfigText(lines.join('\n'));
+}
+
+/* ------------------------ 配置菜单写回 + 热加载 ------------------------ */
+
+/** 允许通过配置菜单修改的键。opacity 实际写入 window 块。 */
+const EDITABLE_KEYS = ['theme', 'fontFamily', 'fontSize', 'lineHeight', 'opacity', 'source', 'replace'];
+
+/** 用 YAML 规则把标量序列化为一行文本（必要时自动加引号，避免转义问题）。 */
+function yamlScalar(value) {
+  return yaml.dump(value, { lineWidth: -1 }).replace(/\n+$/, '');
+}
+
+/** 给每行统一加缩进前缀。 */
+function indentLines(text, prefix) {
+  return text
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => prefix + line)
+    .join('\n');
+}
+
+/**
+ * 定向替换某个顶格键（连同其后缩进的子行）为给定文本块，保留文件其余内容与注释。
+ *
+ * 采用「整块」匹配而非「单行」匹配，是为了在「单行 ↔ 多行」之间来回切换时不留残行：
+ * 例如 source 由数组切换为单文件时，旧的多行列表会被一并吞掉。
+ */
+function setKeyBlock(text, key, blockText) {
+  const re = new RegExp('^' + key + ':[^\\n]*\\n?(?:[ \\t]+[^\\n]*\\n?)*', 'm');
+  if (re.test(text)) return text.replace(re, () => blockText);
+  return `${text.replace(/\s*$/, '')}\n\n${blockText}`;
+}
+
+/**
+ * 定向替换 parent 块内的某个缩进键（如 window.opacity），保留其它行与注释。
+ *
+ * 块范围按「行」界定，而不是按「连续缩进行」匹配：块内允许出现空行与注释
+ * （例如 window 块里 width/height/position 与 opacity 之间就隔了空行和注释），
+ * 块在「下一个顶格且非空的行」处结束。
+ */
+function setNestedScalar(text, parent, key, valueLiteral) {
+  const parentRe = new RegExp('^' + parent + ':[ \\t]*$', 'm');
+  if (!parentRe.test(text)) {
+    return `${text.replace(/\s*$/, '')}\n\n${parent}:\n  ${key}: ${valueLiteral}\n`;
+  }
+
+  const lines = text.split('\n');
+  const start = lines.findIndex((line) => parentRe.test(line));
+
+  let end = start + 1;
+  while (end < lines.length && (lines[end].trim() === '' || /^[ \t]/.test(lines[end]))) {
+    end += 1;
+  }
+
+  const keyRe = new RegExp('^([ \\t]+)' + key + ':[ \\t]*[^\\n]*$');
+  for (let i = start + 1; i < end; i += 1) {
+    const m = lines[i].match(keyRe);
+    if (m) {
+      lines[i] = `${m[1]}${key}: ${valueLiteral}`;
+      return lines.join('\n');
+    }
+  }
+
+  // 块内还没有该键：插在 parent 行之后
+  lines.splice(start + 1, 0, `  ${key}: ${valueLiteral}`);
+  return lines.join('\n');
+}
+
+/** source 的文本块：字符串写单行，数组写多行列表。 */
+function sourceBlockText(source) {
+  if (Array.isArray(source)) {
+    if (source.length === 0) return 'source: []\n';
+    return `source:\n${source.map((item) => `  - ${yamlScalar(String(item))}`).join('\n')}\n`;
+  }
+  return `source: ${yamlScalar(String(source))}\n`;
+}
+
+/** replace 的文本块：空列表写 `replace: []`，否则用 YAML 序列化后缩进。 */
+function replaceBlockText(rules) {
+  if (!Array.isArray(rules) || rules.length === 0) return 'replace: []\n';
+  const dumped = yaml.dump(rules, { lineWidth: -1, indent: 2, noRefs: true }).replace(/\n+$/, '');
+  return `replace:\n${indentLines(dumped, '  ')}\n`;
+}
+
+/**
+ * 通过配置菜单保存配置：只校验并改写传入的键，其余内容（含手写注释）原样保留。
+ * 校验复用 normalize()，因此非法值会被规整成与读取时一致的结果。
+ */
+function saveConfig(patch) {
+  const src = patch && typeof patch === 'object' ? patch : {};
+  ensureConfig();
+
+  let text;
+  try {
+    text = fs.readFileSync(CONFIG_PATH, 'utf8');
+  } catch {
+    text = TEMPLATE;
+  }
+
+  let raw = {};
+  try {
+    raw = yaml.load(text) || {};
+  } catch {
+    raw = {};
+  }
+  if (!raw || typeof raw !== 'object') raw = {};
+
+  const has = (key) => Object.prototype.hasOwnProperty.call(src, key) && src[key] !== undefined;
+
+  // 把改动覆盖到当前配置上，交给 normalize 做统一的类型/范围校验
+  const candidate = { ...raw };
+  for (const key of EDITABLE_KEYS) {
+    if (!has(key)) continue;
+    if (key === 'opacity') {
+      candidate.window = { ...(raw.window && typeof raw.window === 'object' ? raw.window : {}) };
+      candidate.window.opacity = src.opacity;
+    } else {
+      candidate[key] = src[key];
+    }
+  }
+
+  const cfg = normalize(candidate);
+
+  // 用「校验后」的值做定向文本替换
+  if (has('theme')) text = setKeyBlock(text, 'theme', `theme: ${yamlScalar(cfg.theme)}\n`);
+  if (has('fontFamily')) text = setKeyBlock(text, 'fontFamily', `fontFamily: ${yamlScalar(cfg.fontFamily)}\n`);
+  if (has('fontSize')) text = setKeyBlock(text, 'fontSize', `fontSize: ${yamlScalar(cfg.fontSize)}\n`);
+  if (has('lineHeight')) text = setKeyBlock(text, 'lineHeight', `lineHeight: ${yamlScalar(cfg.lineHeight)}\n`);
+  if (has('source')) text = setKeyBlock(text, 'source', sourceBlockText(cfg.source));
+  if (has('replace')) text = setKeyBlock(text, 'replace', replaceBlockText(cfg.replace));
+  if (has('opacity')) text = setNestedScalar(text, 'window', 'opacity', yamlScalar(cfg.window.opacity));
+
+  writeConfigText(text);
+  return normalize(yaml.load(text) || {});
+}
+
+/**
+ * 把设置窗口的改动合并到一份「已规范化」的配置上，返回新的配置（**只改内存，不写文件**）。
+ *
+ * 「应用」按钮走这里：预览与保存共用同一套校验（normalize），
+ * 因此预览看到的结果，与点「保存」后重新读取到的结果一致。
+ */
+function applyPatch(cfg, patch) {
+  const base = cfg && typeof cfg === 'object' ? cfg : loadConfig();
+  const src = patch && typeof patch === 'object' ? patch : {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(src, key) && src[key] !== undefined;
+
+  const raw = {
+    source: base.source,
+    theme: base.theme,
+    fontFamily: base.fontFamily,
+    fontSize: base.fontSize,
+    lineHeight: base.lineHeight,
+    replace: base.replace,
+    window: { ...base.window },
+  };
+
+  if (has('theme')) raw.theme = src.theme;
+  if (has('fontFamily')) raw.fontFamily = src.fontFamily;
+  if (has('fontSize')) raw.fontSize = src.fontSize;
+  if (has('lineHeight')) raw.lineHeight = src.lineHeight;
+  if (has('source')) raw.source = src.source;
+  if (has('replace')) raw.replace = src.replace;
+  if (has('opacity')) raw.window.opacity = src.opacity;
+
+  return normalize(raw);
+}
+
+/** config.yaml 当前内容是否与程序上次读写的不同（供热加载去重，避免自触发循环）。 */
+function hasConfigChanged() {
+  let text;
+  try {
+    text = fs.readFileSync(CONFIG_PATH, 'utf8');
+  } catch {
+    return false;
+  }
+  return text !== knownContent;
 }
 
 module.exports = {
@@ -453,10 +734,15 @@ module.exports = {
   TEMPLATE,
   MIN_WINDOW_WIDTH,
   MIN_WINDOW_HEIGHT,
+  MIN_SETTINGS_WINDOW_WIDTH,
+  MIN_SETTINGS_WINDOW_HEIGHT,
   MAX_REPLACE_RULES,
   ensureConfig,
   loadConfig,
   normalizeReplaceRules,
   saveProgress,
   saveWindowState,
+  saveConfig,
+  applyPatch,
+  hasConfigChanged,
 };

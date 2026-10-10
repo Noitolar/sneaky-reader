@@ -1,0 +1,366 @@
+/* ============================================================
+   sneaky-reader 设置窗口
+   设计取向：无边框、配色跟随阅读主题、表单控件在任何主题下都清晰可辨
+
+   配色令牌由 settings.js 依据「当前生效的配置」写入（含派生色）：
+     --bg / --fg / --fg-strong / --border / --error  主题基础令牌
+     --control / --hover                            控件底色 / 强调底色（派生）
+   ============================================================ */
+
+:root {
+  /* 兜底值（暗色）；运行时会被 settings.js 覆盖 */
+  --bg: #1a1a1a;
+  --fg: #c8c8c8;
+  --fg-strong: #e6e6e6;
+  --border: #3a3a3a;
+  --error: #d9534f;
+  --control: #2b2b2b;
+  --hover: #3a3a3a;
+
+  /* 设置窗口用自己的界面字体与字号：不跟随阅读字号（12px 等阅读设置不适合表单） */
+  --ui-font: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+  --ui-font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+body {
+  font-family: var(--ui-font);
+  font-size: var(--ui-font-size);
+  line-height: 1.5;
+  color: var(--fg);
+  cursor: default;
+  /* 需求：不需要文字选中（表单控件在下面单独放开） */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 让 Chromium 用明/暗两套原生控件配色渲染下拉列表弹层、滚动条等，
+   否则浅色主题里会冒出一块深色弹层（或反之）。 */
+body[data-theme='light'],
+body[data-theme='sepia'],
+body[data-theme='green'] {
+  color-scheme: light;
+}
+
+body[data-theme='dark'],
+body[data-theme='gray'],
+body[data-theme='slate'],
+body[data-theme='oled'] {
+  color-scheme: dark;
+}
+
+#settings-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* ------------------------------ 标题栏（可拖动） ------------------------------ */
+
+#settings-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+}
+
+.settings-title {
+  color: var(--fg-strong);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+#settings-header button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#settings-header button:hover {
+  background: var(--hover);
+  color: var(--fg-strong);
+}
+
+/* ------------------------------ 表单区 ------------------------------ */
+
+.settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 12px;
+}
+
+.group + .group {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.group-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-strong);
+  letter-spacing: 0.06em;
+}
+
+.group-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg);
+  opacity: 0.72;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field + .field {
+  margin-top: 8px;
+}
+
+.field-label {
+  flex: 0 0 76px;
+  color: var(--fg);
+}
+
+/* 原生控件统一底色与文字色：
+   只设 color 不设 background 时，浅色主题的文字会落到系统白底的下拉弹层上而看不清。 */
+.settings-body input,
+.settings-body select,
+.settings-body textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--fg);
+  background-color: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.settings-body input:focus,
+.settings-body select:focus,
+.settings-body textarea:focus {
+  outline: none;
+  border-color: var(--fg-strong);
+}
+
+.settings-body input[type='number'] {
+  flex: 0 0 88px;
+}
+
+.settings-body textarea.block-input {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  white-space: pre;
+  line-height: 1.5;
+}
+
+/* 下拉框：自定义箭头（appearance:none 之后原生箭头会消失），颜色跟随主题 */
+.select-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.select-wrap select {
+  width: 100%;
+  padding-right: 20px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.select-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  margin-top: -2px;
+  border-top: 5px solid currentColor;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+  color: var(--fg);
+  pointer-events: none;
+}
+
+/* 下拉弹层里的每一项：显式给出底色与文字色 */
+.settings-body select option {
+  color: var(--fg);
+  background-color: var(--control);
+}
+
+/* 滑块：轨道与滑块都必须显式上色，否则在部分主题下几乎看不见 */
+.settings-body input[type='range'] {
+  flex: 1 1 auto;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.settings-body input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.settings-body input[type='range']::-webkit-slider-thumb {
+  width: 13px;
+  height: 13px;
+  margin-top: -4.5px;
+  border: 1px solid var(--bg);
+  border-radius: 50%;
+  background: var(--fg-strong);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.settings-body input[type='range']:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--hover);
+}
+
+#cfg-opacity-value {
+  flex: 0 0 auto;
+  min-width: 30px;
+  text-align: right;
+  color: var(--fg-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------ 正则替换规则 ------------------------------ */
+
+.rule-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 0.55fr auto;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.rule-row input {
+  width: 100%;
+}
+
+button.ghost {
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--fg);
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button.ghost:hover {
+  background: var(--hover);
+  color: var(--fg-strong);
+}
+
+/* ------------------------------ 底部操作区 ------------------------------ */
+
+.settings-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-status {
+  flex: 1 1 140px;
+  min-height: 16px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg);
+  opacity: 0.75;
+}
+
+.settings-status.ok {
+  color: var(--fg-strong);
+}
+
+.settings-status.error {
+  color: var(--error);
+  opacity: 1;
+}
+
+.footer-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.footer-actions button {
+  padding: 4px 10px;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--fg);
+  background: var(--control);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.footer-actions button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg-strong);
+}
+
+.footer-actions button.primary {
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--fg-strong);
+  border-color: var(--fg-strong);
+}
+
+.footer-actions button.primary:hover:not(:disabled) {
+  opacity: 0.88;
+  background: var(--fg-strong);
+  color: var(--bg);
+}
+
+.footer-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
